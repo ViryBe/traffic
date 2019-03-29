@@ -154,6 +154,12 @@ class Flight(GeographyMixin, ShapelyMixin):
         self.data = self.data.assign(stop=stop)
         return stop
 
+    # https://github.com/python/mypy/issues/1362
+    @property  # type: ignore
+    @lru_cache()
+    def duration(self) -> pd.Timedelta:
+        return self.stop - self.start
+
     @lru_cache()
     def min(self, feature: str):
         return self.data[feature].min()
@@ -675,7 +681,7 @@ class Flight(GeographyMixin, ShapelyMixin):
         # The following is True for all data coming from the Impala shell.
         # The following is an attempt to fix #7
         # Note the fun/fast way to produce 1 or trigger NaN (division by zero)
-        data = self.data.sort_values('timestamp')
+        data = self.data.sort_values("timestamp")
         if "last_position" in self.data.columns:
             data = (
                 data.assign(
