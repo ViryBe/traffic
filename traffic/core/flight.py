@@ -8,6 +8,7 @@ from typing import (TYPE_CHECKING, Callable, Generator, Iterable, Iterator,
                     List, NamedTuple, Optional, Set, Tuple, Type, TypeVar,
                     Union, cast, overload)
 
+import altair as alt
 import numpy as np
 import pandas as pd
 import scipy.signal
@@ -154,12 +155,6 @@ class Flight(GeographyMixin, ShapelyMixin):
         self.data = self.data.assign(stop=stop)
         return stop
 
-    # https://github.com/python/mypy/issues/1362
-    @property  # type: ignore
-    @lru_cache()
-    def duration(self) -> pd.Timedelta:
-        return self.stop - self.start
-
     @lru_cache()
     def min(self, feature: str):
         return self.data[feature].min()
@@ -265,14 +260,29 @@ class Flight(GeographyMixin, ShapelyMixin):
         }
         return opensky.history(**query_params)  # type: ignore
 
-    def query_ehs(self) -> "Flight":
-        """Extend data with extra columns from EHS."""
+    def query_ehs(
+        self,
+        data: Optional[pd.DataFrame] = None,
+        failure_mode: str = "warning",
+        progressbar: Optional[Callable[[Iterable], Iterable]] = None,
+    ) -> "Flight":
+        """Extend data with extra columns from EHS messages.
+
+        By default, raw messages are requested from the OpenSky Impala server.
+
+        Making a lot of small requests can be very inefficient and may look
+        like a denial of service. If you get the raw messages using a different
+        channel, you can provide the resulting dataframe as a parameter.
+
+        The data parameter expect three colmuns: icao24, rawmsg and mintime, in
+        conformance with the OpenSky API.
+        """
         from ..data import opensky, ModeS_Decoder
 
         if not isinstance(self.icao24, str):
             raise RuntimeError("Several icao24 for this flight")
 
-        def failure():
+        def fail_warning():
             """Called when nothing can be added to data."""
             id_ = self.flight_id
             if id_ is None:
@@ -280,8 +290,16 @@ class Flight(GeographyMixin, ShapelyMixin):
             logging.warn(f"No data on Impala for flight {id_}.")
             return self
 
-        df = opensky.extended(self.start, self.stop, icao24=self.icao24)
+        def fail_silent():
+            return self
 
+        failure_dict = dict(warning=fail_warning, silent=fail_silent)
+        failure = failure_dict[failure_mode]
+
+        if data is None:
+            df = opensky.extended(self.start, self.stop, icao24=self.icao24)
+        else:
+            df = data.query("icao24 == @self.icao24").sort_values("mintime")
         if df is None:
             return failure()
 
@@ -293,7 +311,12 @@ class Flight(GeographyMixin, ShapelyMixin):
             timestamped_df.merge(self.data, on="timestamp", how="outer")
             .sort_values("timestamp")
             .rename(
-                columns=dict(altitude_y="alt", groundspeed="spd", track="trk")
+                columns=dict(
+                    altitude="alt",
+                    altitude_y="alt",
+                    groundspeed="spd",
+                    track="trk",
+                )
             )[["timestamp", "alt", "spd", "trk"]]
             .ffill()
             .drop_duplicates()  # bugfix! NEVER ERASE THAT LINE!
@@ -309,12 +332,16 @@ class Flight(GeographyMixin, ShapelyMixin):
         )
         # who cares about default lat0, lon0 with EHS
         decoder = ModeS_Decoder((0, 0))
-        for _, line in tqdm(
-            referenced_df.iterrows(),
-            total=referenced_df.shape[0],
-            desc=f"{identifier}:",
-            leave=False,
-        ):
+
+        if progressbar is None:
+            progressbar = lambda x: tqdm(  # noqa: E731
+                x,
+                total=referenced_df.shape[0],
+                desc=f"{identifier}:",
+                leave=False,
+            )
+
+        for _, line in progressbar(referenced_df.iterrows()):
 
             decoder.process(
                 line.timestamp,
@@ -627,7 +654,6 @@ class Flight(GeographyMixin, ShapelyMixin):
             )
             / 1852,
             vertical=(table.altitude_x - table.altitude_y).abs(),
-        )
 
     def cumulative_distance(
         self, compute_groundspeed: bool = False
@@ -879,6 +905,50 @@ class Flight(GeographyMixin, ShapelyMixin):
         if self.shape is not None:
             return ax.plot(*self.shape.xy, **kwargs)
         return []
+
+    def chart(
+        self, feature_name: Union[str, List[str]], encode_dict: dict = dict()
+    ) -> alt.Chart:
+        feature_list = ["timestamp"]
+        if "flight_id" in self.data.columns:
+            feature_list.append("flight_id")
+        if "callsign" in self.data.columns:
+            feature_list.append("callsign")
+        if "icao24" in self.data.columns:
+            feature_list.append("icao24")
+        if isinstance(feature_name, str):
+            feature_list.append(feature_name)
+            data = self.data[feature_list].query(
+                f"{feature_name} == {feature_name}"
+            )
+            default_encode = dict(
+                x="timestamp:T",
+                y=alt.Y(feature_name, title=feature_name),
+                color=alt.Color(
+                    "flight_id"
+                    if "flight_id" in data.columns
+                    else (
+                        "callsign" if "callsign" in data.columns else "icao24"
+                    )
+                ),
+            )
+        else:
+            feature_list += feature_name
+            data = (
+                self.data[feature_list]
+                .melt("timestamp", feature_name)
+                .query("value == value")
+            )
+            default_encode = dict(x="timestamp:T", y="value", color="variable")
+
+        return (
+            alt.Chart(data)
+            .mark_line(interpolate="bundle")
+            .encode(**{**default_encode, **encode_dict})
+            .transform_timeunit(
+                timestamp="utcyearmonthdatehoursminutesseconds(timestamp)"
+            )
+        )
 
     def plot_time(
         self,
