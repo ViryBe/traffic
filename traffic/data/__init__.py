@@ -10,7 +10,7 @@ from .airspaces.eurocontrol_aixm import AIXMAirspaceParser
 from .airspaces.eurocontrol_nm import NMAirspaceParser
 from .airspaces.eurofirs import eurofirs
 from .basic.aircraft import Aircraft
-from .basic.airport import AirportParser
+from .basic.airport import Airports
 from .basic.airways import Airways
 from .basic.navaid import NavaidParser
 from .basic.runways import Runways
@@ -45,11 +45,11 @@ nm_path_str = config.get("global", "nm_path", fallback="")
 if nm_path_str != "":
     NMAirspaceParser.nm_path = Path(nm_path_str)
 
-Aircraft.cache = cache_dir / "aircraft.pkl"
-AirportParser.cache = cache_dir / "airports.pkl"
+Aircraft.cache_dir = cache_dir
+Airports.cache_dir = cache_dir
 Airways.cache = cache_dir / "airways.pkl"
 NavaidParser.cache = cache_dir / "navaids.pkl"
-Runways.cache = cache_dir / "runways.pkl"
+Runways.cache_dir = cache_dir
 AIXMAirspaceParser.cache_dir = cache_dir
 
 opensky_username = config.get("global", "opensky_username", fallback="")
@@ -57,23 +57,22 @@ opensky_password = config.get("global", "opensky_password", fallback="")
 
 if sys.version_info < (3, 7, 0):
     aircraft = Aircraft()
-    airports = AirportParser()
+    airports = Airports()
     airways = Airways()
     navaids = NavaidParser()
     aixm_airspaces = AIXMAirspaceParser(config_file)
     nm_airspaces = NMAirspaceParser(config_file)
-    runways = Runways().runways
+    runways = Runways()
     opensky = OpenSky(opensky_username, opensky_password, cache_dir / "opensky")
 
 
 @lru_cache()
 def __getattr__(name: str):
     """This only works for Python >= 3.7, see PEP 562."""
-    logging.info(f"Lazy loading of {name}")
     if name == "aircraft":
         return Aircraft()
     if name == "airports":
-        return AirportParser()
+        return Airports()
     if name == "airways":
         return Airways()
     if name == "navaids":
@@ -87,7 +86,7 @@ def __getattr__(name: str):
             opensky_username, opensky_password, cache_dir / "opensky"
         )
     if name == "runways":
-        return Runways().runways
+        return Runways()
     if name == "airac":
         cache_file = cache_dir / "airac.cache"
         if cache_file.exists():

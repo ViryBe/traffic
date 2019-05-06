@@ -20,16 +20,16 @@ class DistancePointTrajectory(NamedTuple):
 
 def closest_point(
     data: pd.DataFrame,
-    point: Optional[NamedTuple] = None,
+    point: Optional[PointMixin] = None,
     *args,
     latitude: Optional[float] = None,
     longitude: Optional[float] = None,
 ) -> DistancePointTrajectory:
 
     if point is not None:
-        latitude = point.latitude  # type: ignore
-        longitude = point.longitude  # type: ignore
-        name = point.name  # type: ignore
+        latitude = point.latitude
+        longitude = point.longitude
+        name = point.name
     else:
         name = "unnamed"
     dist_vect = geo.distance(
@@ -56,12 +56,10 @@ def guess_airport(
     if any((longitude is None, latitude is None)):
         raise RuntimeError("latitude or longitude are None")
 
-    airports_df = pd.DataFrame.from_records(
-        a._asdict() for a in airports.airports
-    ).rename(columns={"lat": "latitude", "lon": "longitude"})
-
     distance, _, airport = closest_point(
-        airports_df, latitude=latitude, longitude=longitude
+        airports.data, latitude=latitude, longitude=longitude
     )
 
-    return DistanceAirport(distance, airports[airport.icao])
+    airport_handle = airports[airport.icao]
+    assert airport_handle is not None
+    return DistanceAirport(distance, airport_handle)
